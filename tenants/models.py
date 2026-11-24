@@ -16,8 +16,9 @@ class TenantAccount(models.Model):
         (STATUS_DELETED, "Deleted"),
     ]
 
-    pharmacy_tin = models.CharField(max_length=50, unique=True, db_index=True)
-    pharmacy_name = models.CharField(max_length=255, blank=True, default="")
+    pharmacy_tin = models.CharField(max_length=50, unique=True, db_index=True, db_column="clinic_tin")
+    pharmacy_name = models.CharField(max_length=255, blank=True, default="", db_column="clinic_name")
+    branch_name = models.CharField(max_length=255, default="Main")
     phone = models.CharField(max_length=32, blank=True, default="")
     logo_url = models.URLField(blank=True, default="")
     account_status = models.CharField(
@@ -42,9 +43,21 @@ class TenantAccount(models.Model):
     billing_started_at = models.DateTimeField(null=True, blank=True)
     free_trial_ends_at = models.DateTimeField(null=True, blank=True)
     is_illustration = models.BooleanField(default=False)
+    provisioned_by_apex = models.BooleanField(default=False)
     billing_notes = models.TextField(blank=True, default="")
     modules = models.JSONField(default=list, blank=True)
     fees_manually_set = models.BooleanField(default=False)
+    OPS_MODE_ONLINE = "online"
+    OPS_MODE_OFFLINE = "offline"
+    ops_mode = models.CharField(max_length=20, default="online", db_index=True)
+    sales_agent = models.ForeignKey(
+        "SalesAgent",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenants",
+        db_constraint=False,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -66,7 +79,7 @@ class TenantPaymentSubmission(models.Model):
     STATUS_APPROVED = "approved"
     STATUS_REJECTED = "rejected"
 
-    pharmacy_tin = models.CharField(max_length=50, db_index=True)
+    pharmacy_tin = models.CharField(max_length=50, db_index=True, db_column="clinic_tin")
     payment_kind = models.CharField(max_length=20, db_index=True)
     amount_etb = models.PositiveIntegerField()
     payment_channel = models.CharField(max_length=64)
@@ -109,23 +122,25 @@ class TenantPaymentSubmission(models.Model):
 
 
 class UserProfile(models.Model):
-    """Mirrors pharmacy.user.UserProfile (shared MySQL table)."""
+    """Mirrors mediflow.api.UserProfile (shared MySQL table)."""
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="pharmacy_profile",
     )
-    pharmacy_name = models.CharField(max_length=255, blank=True)
+    pharmacy_name = models.CharField(max_length=255, blank=True, db_column="clinic_name")
     role = models.CharField(max_length=100, blank=True)
     logoUrl = models.URLField(blank=True)
-    pharmacy_tin = models.CharField(max_length=50, blank=True)
+    pharmacy_tin = models.CharField(max_length=50, blank=True, db_column="clinic_tin")
+    branch_name = models.CharField(max_length=255, default="Main")
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
-        db_table = "user_userprofile"
+        db_table = "api_userprofile"
 
     def __str__(self):
         return self.user.username
@@ -239,3 +254,123 @@ class ApexAuditLog(models.Model):
     class Meta:
         db_table = "tenants_apexauditlog"
         ordering = ["-created_at"]
+
+
+class SalesAgent(models.Model):
+    display_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=64, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    city = models.CharField(max_length=128, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "tenants_salesagent"
+        ordering = ["display_name"]
+
+    def __str__(self):
+        return self.display_name
+
+
+class TenantOpsModeChangeRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_APPLIED = "applied"
+
+    clinic_tin = models.CharField(max_length=50, db_index=True, db_column="clinic_tin")
+    current_ops_mode = models.CharField(max_length=20)
+    requested_ops_mode = models.CharField(max_length=20)
+    request_note = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=20, default=STATUS_PENDING, db_index=True)
+    requested_by_username = models.CharField(max_length=150, blank=True, default="")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        db_constraint=False,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        db_constraint=False,
+    )
+    review_note = models.TextField(blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "tenants_tenantopsmodechangerequest"
+        ordering = ["-created_at"]
+
+
+# ---- Clinic server (offline sync) tables, owned by the MediFlow clinic app (shared MySQL tables) ----
+class SyncNode(models.Model):
+    """A clinic server credential for one branch. Only the hash of the token is stored."""
+
+    clinic_tin = models.CharField(max_length=50, db_index=True)
+    branch_name = models.CharField(max_length=120, blank=True, default="")
+    label = models.CharField(max_length=120, blank=True, default="")
+    token_hash = models.CharField(max_length=64, unique=True)
+    token_prefix = models.CharField(max_length=12, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "clinic_syncnode"
+        ordering = ["-created_at"]
+
+
+class SyncState(models.Model):
+    clinic_tin = models.CharField(max_length=50)
+    branch_name = models.CharField(max_length=120, blank=True, default="")
+    seeded_at = models.DateTimeField(null=True, blank=True)
+    last_successful_sync_at = models.DateTimeField(null=True, blank=True)
+    restore_pending = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "clinic_syncstate"
+
+
+class SyncRun(models.Model):
+    sync_uuid = models.UUIDField()
+    clinic_tin = models.CharField(max_length=50, db_index=True)
+    branch_name = models.CharField(max_length=120, blank=True, default="")
+    kind = models.CharField(max_length=8)
+    push_status = models.CharField(max_length=10)
+    pull_status = models.CharField(max_length=10)
+    error_message = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "clinic_syncrun"
+        ordering = ["-started_at"]
+
+
+class SyncConflict(models.Model):
+    clinic_tin = models.CharField(max_length=50, db_index=True)
+    branch_name = models.CharField(max_length=120, blank=True, default="")
+    entity = models.CharField(max_length=40)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "clinic_syncconflict"

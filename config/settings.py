@@ -1,8 +1,9 @@
 """
-Django settings for pharmacy-admin (Apex tenant console).
-Shares the same MySQL database as the pharmacy (Medicare) tenant app.
+Django settings for mediflow_admin (Apex clinic console).
+Shares the same MySQL database as the mediflow tenant app.
 """
 
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -65,20 +66,26 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",
-        "NAME": config("DB_NAME", default="pharmacy_db"),
+        "NAME": config("DB_NAME", default="Clinical_DB"),
         "USER": config("DB_USER", default="root"),
         "PASSWORD": config("DB_PASSWORD", default=""),
         "HOST": config("DB_HOST", default="127.0.0.1"),
         "PORT": config("DB_PORT", default="3306"),
         "OPTIONS": {
             "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
+            **({"ssl": {"ssl": True}} if config("DB_SSL", default=False, cast=bool) else {}),
         },
     }
 }
 
+# The console shares tables owned by the MediFlow app, so its migrations cannot build an empty database.
+# Tests create the tables they need themselves (see tenants/tests_ops_mode.py).
+if "test" in sys.argv:
+    DATABASES["default"]["TEST"] = {"MIGRATE": False}
+
 CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
-    default="http://localhost:3000",
+    default="http://localhost:3000,http://localhost:3002",
     cast=Csv(),
 )
 

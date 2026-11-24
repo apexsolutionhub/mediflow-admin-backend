@@ -36,8 +36,17 @@ def modules_from_key(modules_key: str) -> list[str]:
     return [s.strip() for s in str(modules_key).split("|") if s.strip()]
 
 
-def fallback_pricing(modules) -> dict:
-    """Hardcoded Medicare matrix when no catalog rule matches."""
+def fallback_pricing(modules=None, *, business_type: str = "Pharmacy") -> dict:
+    """Hardcoded matrix when no catalog rule matches."""
+    bt = (business_type or "Pharmacy").strip() or "Pharmacy"
+    if bt == "Clinic":
+        return {
+            "setup_fee_etb": 15000,
+            "quarterly_fee_etb": 5000,
+            "yearly_fee_etb": 18000,
+            "description": "",
+        }
+
     set_m = set(modules_for_pricing_lookup(modules))
     has_inv = "Inventory" in set_m
     has_sales = "Sales" in set_m
@@ -59,6 +68,12 @@ def resolve_pricing(business_type: str, modules) -> dict:
     row = SubscriptionPricingRule.objects.filter(
         business_type=bt, modules_key=key, is_active=True
     ).first()
+    if row is None and key == "":
+        row = (
+            SubscriptionPricingRule.objects.filter(business_type=bt, is_active=True)
+            .order_by("sort_order", "id")
+            .first()
+        )
     if row:
         return {
             "setup_fee_etb": row.setup_fee_etb,
@@ -68,7 +83,7 @@ def resolve_pricing(business_type: str, modules) -> dict:
             "source": "catalog",
             "modules_key": key,
         }
-    fees = fallback_pricing(modules)
+    fees = fallback_pricing(modules, business_type=bt)
     return {**fees, "pricing_rule_id": None, "source": "fallback", "modules_key": key}
 
 

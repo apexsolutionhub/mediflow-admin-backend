@@ -9,6 +9,8 @@ from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .clinic_identity import normalize_clinic_identity
+from .tenant_provisioning import is_apex_provisioned_tenant
 from .models import (
     ApexAuditLog,
     SubscriptionPricingRule,
@@ -141,9 +143,21 @@ class PricingPreviewView(APIView):
 
 class FeedbackDirectoryView(APIView):
     def get(self, request):
-        tenants = TenantAccount.objects.exclude(
-            account_status=TenantAccount.STATUS_DELETED
-        ).order_by("pharmacy_name")
+        tenants = list(
+            TenantAccount.objects.filter(
+                account_status=TenantAccount.STATUS_ACTIVE,
+            ).order_by("pharmacy_name")
+        )
+        from .views import annotate_setup_review_status
+
+        annotate_setup_review_status(tenants)
+        tenants = [
+            tenant
+            for tenant in tenants
+            if is_apex_provisioned_tenant(tenant)
+            or tenant.setup_fee_approved
+            or getattr(tenant, "setup_review_status", None) == "approved"
+        ]
         threads = {
             t.pharmacy_tin: t
             for t in TenantFeedbackThread.objects.all()
@@ -183,10 +197,11 @@ class FeedbackDirectoryView(APIView):
         for tenant in tenants:
             thread = threads.get(tenant.pharmacy_tin)
             preview = last_preview.get(tenant.pharmacy_tin)
+            tin, name = normalize_clinic_identity(tenant.pharmacy_tin, tenant.pharmacy_name)
             rows.append(
                 {
-                    "pharmacy_tin": tenant.pharmacy_tin,
-                    "pharmacy_name": tenant.pharmacy_name,
+                    "pharmacy_tin": tin,
+                    "pharmacy_name": name,
                     "logo_url": tenant.logo_url or "",
                     "account_status": tenant.account_status,
                     "thread_id": thread.id if thread else None,
@@ -218,13 +233,17 @@ class FeedbackThreadView(APIView):
             sender_side=TenantFeedbackMessage.SIDE_TENANT,
             read_by_apex=False,
         ).update(read_by_apex=True)
+        display_tin, display_name = normalize_clinic_identity(
+            tenant.pharmacy_tin,
+            tenant.pharmacy_name,
+        )
         return Response(
             {
                 "thread": {
                     "id": thread.id,
-                    "pharmacy_tin": thread.pharmacy_tin,
+                    "pharmacy_tin": display_tin,
                     "status": thread.status,
-                    "pharmacy_name": tenant.pharmacy_name,
+                    "pharmacy_name": display_name,
                 },
                 "messages": [
                     {
@@ -375,15 +394,42 @@ class TenantUsersView(APIView):
                 | Q(pharmacy_tin__icontains=search)
                 | Q(pharmacy_name__icontains=search)
             )
+        from .branch_views import ClinicBranch
+
+        op_to_org: dict[str, str] = {}
+        op_to_branch: dict[str, dict] = {}
+        for branch in ClinicBranch.objects.all():
+            org = (branch.clinic_tin or "").strip()
+            op = branch.operational_tin()
+            if not op:
+                continue
+            key = op.lower()
+            op_to_org[key] = org or op
+            op_to_branch[key] = {
+                "name": branch.name,
+                "is_main": bool(branch.is_main),
+                "branch_tin": op,
+            }
+
         rows = []
         for p in qs[:300]:
+            tin, name = normalize_clinic_identity(p.pharmacy_tin, p.pharmacy_name)
+            tin_key = (tin or "").strip().lower()
+            branch_meta = op_to_branch.get(tin_key) or {}
             rows.append(
                 {
                     "id": p.user_id,
                     "username": p.user.username,
                     "role": p.role,
-                    "pharmacy_tin": p.pharmacy_tin,
-                    "pharmacy_name": p.pharmacy_name,
+                    "pharmacy_tin": tin,
+                    "pharmacy_name": name,
+                    "branch_name": (getattr(p, "branch_name", "") or "").strip()
+                    or branch_meta.get("name")
+                    or "",
+                    "org_tin": op_to_org.get(tin_key) or tin,
+                    "is_main_branch": bool(branch_meta.get("is_main"))
+                    if branch_meta
+                    else True,
                     "is_active": p.user.is_active,
                     "login_disabled": not p.user.is_active,
                 }
@@ -490,10 +536,11 @@ class SignupsPipelineView(APIView):
                 # Created this month, setup not approved, no pending submission
                 status_key = "pending"
 
+            tin, name = normalize_clinic_identity(t.pharmacy_tin, t.pharmacy_name)
             rows.append(
                 {
-                    "pharmacy_tin": t.pharmacy_tin,
-                    "pharmacy_name": t.pharmacy_name,
+                    "pharmacy_tin": tin,
+                    "pharmacy_name": name,
                     "created_at": t.created_at,
                     "setup_fee_etb": t.setup_fee_etb,
                     "free_trial_ends_at": t.free_trial_ends_at,

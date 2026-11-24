@@ -1,5 +1,10 @@
 from django.urls import path
 
+from .ops_mode_views import (
+    ApproveOpsModeRequestView,
+    OpsModeRequestsListView,
+    RejectOpsModeRequestView,
+)
 from .ops_views import (
     AnalyticsSummaryView,
     AuditLogView,
@@ -16,6 +21,9 @@ from .ops_views import (
     StartChatView,
     TenantUsersView,
 )
+from .sales_agents import ApexSalesAgentDetailView, ApexSalesAgentListView
+from .sync_nodes import IssueSyncNodeView, RevokeSyncNodeView, TenantSyncView
+from .branch_views import TenantBranchDetailView, TenantBranchesView
 from .views import (
     ApproveQuarterlyPaymentView,
     ApproveSetupPaymentView,
@@ -30,6 +38,8 @@ from .views import (
 )
 
 urlpatterns = [
+    path("sales-agents/", ApexSalesAgentListView.as_view(), name="sales-agents"),
+    path("sales-agents/<int:pk>/", ApexSalesAgentDetailView.as_view(), name="sales-agent-detail"),
     path("summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
     path("analytics/", AnalyticsSummaryView.as_view(), name="analytics-summary"),
     path("signups/", SignupsPipelineView.as_view(), name="signups-pipeline"),
@@ -58,7 +68,27 @@ urlpatterns = [
         name="payments-approve-yearly",
     ),
     path("payments/reject/", RejectPaymentView.as_view(), name="payments-reject"),
+    path("ops-mode-requests/", OpsModeRequestsListView.as_view(), name="ops-mode-requests"),
+    path(
+        "ops-mode-requests/approve/",
+        ApproveOpsModeRequestView.as_view(),
+        name="ops-mode-requests-approve",
+    ),
+    path(
+        "ops-mode-requests/reject/",
+        RejectOpsModeRequestView.as_view(),
+        name="ops-mode-requests-reject",
+    ),
+    path("sync-nodes/issue/", IssueSyncNodeView.as_view(), name="sync-node-issue"),
+    path("sync-nodes/revoke/", RevokeSyncNodeView.as_view(), name="sync-node-revoke"),
     path("", TenantListCreateView.as_view(), name="tenant-list-create"),
+    path("<str:tin>/sync/", TenantSyncView.as_view(), name="tenant-sync"),
+    path("<str:tin>/branches/", TenantBranchesView.as_view(), name="tenant-branches"),
+    path(
+        "<str:tin>/branches/<int:pk>/",
+        TenantBranchDetailView.as_view(),
+        name="tenant-branch-detail",
+    ),
     path("<str:tin>/", TenantDetailView.as_view(), name="tenant-detail"),
     path("<str:tin>/release-hold/", ReleaseBillingHoldView.as_view(), name="tenant-release-hold"),
     path("<str:tin>/<str:action>/", TenantStatusView.as_view(), name="tenant-status"),
