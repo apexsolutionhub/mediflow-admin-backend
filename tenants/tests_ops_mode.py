@@ -124,6 +124,54 @@ class ApprovalTests(AdminCase):
         self.assertIn(anonymous.post("/api/tenants/sync-nodes/issue/", {"tin": TIN}, format="json").status_code, (401, 403))
 
 
+class AutoTokenTests(AdminCase):
+    """The clinic server's token is handed over when the clinic goes (or starts) offline, shown once."""
+
+    def approve(self, req):
+        return self.client.post("/api/tenants/ops-mode-requests/approve/", {"request_id": req.id}, format="json")
+
+    def test_approving_a_switch_to_offline_issues_the_token(self):
+        res = self.approve(self.request("online", "offline"))
+        issued = res.json()["server_token"]
+        self.assertTrue(issued["token"].startswith("mfn_"))
+        self.assertEqual(issued["branch_name"], "Main")
+        node = SyncNode.objects.get()
+        self.assertEqual(node.token_hash, hashlib.sha256(issued["token"].encode("utf-8")).hexdigest())
+        self.assertTrue(node.is_active)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.ops_mode, "online")  # still online until the seed
+        self.assertNotIn(issued["token"], str(ApexAuditLog.objects.get(action="issue_sync_node").metadata))
+
+    def test_an_existing_token_is_never_replaced_by_an_approval(self):
+        SyncNode.objects.create(clinic_tin=TIN, branch_name="Main", token_hash="a" * 64, token_prefix="mfn_keep")
+        res = self.approve(self.request("online", "offline"))
+        self.assertIsNone(res.json()["server_token"])
+        self.assertEqual(SyncNode.objects.filter(is_active=True).count(), 1)
+
+    def test_going_online_issues_no_token(self):
+        TenantAccount.objects.filter(pk=self.tenant.pk).update(ops_mode="offline")
+        self.assertIsNone(self.approve(self.request("offline", "online")).json()["server_token"])
+        self.assertEqual(SyncNode.objects.count(), 0)
+
+    def test_the_helper_covers_clinics_created_or_activated_as_offline(self):
+        from tenants.sync_nodes import auto_issue_server_token
+
+        self.assertIsNone(auto_issue_server_token(self.tenant, "apex"))  # online: nothing
+        TenantAccount.objects.filter(pk=self.tenant.pk).update(ops_mode="offline")
+        self.tenant.refresh_from_db()
+        first = auto_issue_server_token(self.tenant, "apex")
+        self.assertTrue(first["token"].startswith("mfn_"))
+        self.assertIsNone(auto_issue_server_token(self.tenant, "apex"))  # already has one: never replaced
+        self.assertEqual(SyncNode.objects.filter(is_active=True).count(), 1)
+
+    def test_an_inactive_clinic_gets_no_token(self):
+        from tenants.sync_nodes import auto_issue_server_token
+
+        TenantAccount.objects.filter(pk=self.tenant.pk).update(ops_mode="offline", account_status="suspended")
+        self.tenant.refresh_from_db()
+        self.assertIsNone(auto_issue_server_token(self.tenant, "apex"))
+
+
 class NodeTokenTests(AdminCase):
     def issue(self, **body):
         return self.client.post("/api/tenants/sync-nodes/issue/", {"tin": TIN, **body}, format="json")

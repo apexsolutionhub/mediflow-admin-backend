@@ -277,7 +277,10 @@ class TenantCreateSerializer(serializers.Serializer):
             ops_mode=ops_mode,
             provisioned_by_apex=True,
             fees_manually_set=fees_manually_set,
-            setup_fee_approved=waive or setup_fee <= 0,
+            # A clinic Apex creates is approved from the start (no approval wait). Only
+            # self-signup clinics wait for setup-payment approval. The quarterly side
+            # still follows the waive/fee rules below.
+            setup_fee_approved=True,
             subscription_payment_approved=(waive or setup_fee <= 0) and quarterly_fee > 0,
             paid_quarters_count=1 if ((waive or setup_fee <= 0) and quarterly_fee > 0) else 0,
             billing_started_at=now if ((waive or setup_fee <= 0) and quarterly_fee > 0) else None,
@@ -518,7 +521,12 @@ class TenantListCreateView(APIView):
             detail=tenant.pharmacy_name or tenant.pharmacy_tin,
         )
         tenants = annotate_tenant_rows(TenantAccount.objects.filter(pk=tenant.pk))
-        return Response(TenantSerializer(tenants[0]).data, status=status.HTTP_201_CREATED)
+        data = dict(TenantSerializer(tenants[0]).data)
+        # A clinic created offline gets its clinic server token right away (shown once).
+        from .sync_nodes import auto_issue_server_token
+
+        data["server_token"] = auto_issue_server_token(tenant, getattr(request.user.user, "username", ""))
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class TenantDetailView(APIView):
@@ -678,7 +686,12 @@ class ApproveSetupPaymentView(APIView):
             actor_username=getattr(request.user.user, "username", ""),
             detail="Approved setup payment",
         )
-        return Response(TenantSerializer(annotate_tenant_rows([tenant])[0]).data)
+        data = dict(TenantSerializer(annotate_tenant_rows([tenant])[0]).data)
+        # A clinic that signed up offline becomes active here: hand over its clinic server token (shown once).
+        from .sync_nodes import auto_issue_server_token
+
+        data["server_token"] = auto_issue_server_token(tenant, getattr(request.user.user, "username", ""))
+        return Response(data)
 
 
 class ApproveQuarterlyPaymentView(APIView):

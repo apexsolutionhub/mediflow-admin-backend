@@ -34,6 +34,46 @@ def _tenant(tin: str):
     return TenantAccount.objects.filter(pharmacy_tin=tin).first()
 
 
+def create_node_token(tenant: TenantAccount, branch: str, label: str, actor: str, replace: bool = False):
+    """Issue one token for (tenant TIN, branch). Returns (node, token, replaced_count); the token exists only here."""
+    tin = tenant.pharmacy_tin
+    active = SyncNode.objects.filter(clinic_tin=tin, branch_name__iexact=branch, is_active=True)
+    replaced = active.update(is_active=False) if replace else 0
+    token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    node = SyncNode.objects.create(
+        clinic_tin=tin,
+        branch_name=branch,
+        label=label,
+        token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        token_prefix=token[:8],
+    )
+    write_audit(
+        action="issue_sync_node",
+        pharmacy_tin=tin,
+        actor_username=actor,
+        detail=f"Clinic server token issued for branch {branch}" + (" (replacing the previous one)" if replaced else ""),
+        metadata={"node_id": node.id, "branch": branch, "replaced": replaced},  # never the token itself
+    )
+    return node, token, replaced
+
+
+def auto_issue_server_token(tenant: TenantAccount, actor: str, going_offline: bool = False):
+    """For an offline clinic that has no active token yet: issue its first one so Apex can hand it over right away.
+
+    `going_offline` is for an approved switch request: the clinic is still online until its seed, but its server
+    needs a token now. Returns {"token", "branch_name", "node"} to show once, or None when nothing is needed
+    (online clinic, inactive account, or a token already exists - an existing token is never replaced here).
+    """
+    is_offline = going_offline or tenant.ops_mode == TenantAccount.OPS_MODE_OFFLINE
+    if not is_offline or tenant.account_status != TenantAccount.STATUS_ACTIVE:
+        return None
+    branch = (tenant.branch_name or "Main").strip()[:120] or "Main"
+    if SyncNode.objects.filter(clinic_tin=tenant.pharmacy_tin, branch_name__iexact=branch, is_active=True).exists():
+        return None
+    node, token, _ = create_node_token(tenant, branch, "Reception PC", actor)
+    return {"token": token, "branch_name": branch, "node": _node(node)}
+
+
 class TenantSyncView(APIView):
     """Everything Apex needs to see about one clinic server: tokens, whether it has seeded, recent syncs."""
 
@@ -103,22 +143,8 @@ class IssueSyncNodeView(APIView):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
-        replaced = active.update(is_active=False) if replace else 0
-
-        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
-        node = SyncNode.objects.create(
-            clinic_tin=tin,
-            branch_name=branch,
-            label=label,
-            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
-            token_prefix=token[:8],
-        )
-        write_audit(
-            action="issue_sync_node",
-            pharmacy_tin=tin,
-            actor_username=getattr(request.user.user, "username", ""),
-            detail=f"Clinic server token issued for branch {branch}" + (" (replacing the previous one)" if replaced else ""),
-            metadata={"node_id": node.id, "branch": branch, "replaced": replaced},  # never the token itself
+        node, token, _ = create_node_token(
+            tenant, branch, label, getattr(request.user.user, "username", ""), replace=replace
         )
         return Response(
             {"detail": "Token issued. Copy it now; it cannot be shown again.", "token": token, "node": _node(node)},

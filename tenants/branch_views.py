@@ -244,6 +244,23 @@ def promote_branch_to_main(*, org_tin: str, branch: ClinicBranch) -> list[str]:
     return [str(name) for name in demoted if name]
 
 
+def generate_branch_tin() -> str:
+    """A unique placeholder TIN for a branch created without one (e.g. GEN-4F9A21C7B0).
+
+    It becomes the branch's permanent key: a TIN is never changed once data exists under it.
+    """
+    import secrets
+
+    while True:
+        tin = f"GEN-{secrets.token_hex(5).upper()}"
+        if (
+            not TenantAccount.objects.filter(pharmacy_tin__iexact=tin).exists()
+            and not ClinicBranch.objects.filter(branch_tin__iexact=tin).exists()
+            and not UserProfile.objects.filter(pharmacy_tin__iexact=tin).exists()
+        ):
+            return tin
+
+
 def _validate_branch_tin(*, org_tin: str, branch_tin: str, exclude_pk=None):
     op = (branch_tin or "").strip()
     org = (org_tin or "").strip()
@@ -302,8 +319,7 @@ class TenantBranchesView(APIView):
             return Response({"detail": "A branch with that name already exists."}, status=400)
 
         branch_tin = (request.data.get("branch_tin") or "").strip()
-        if not branch_tin:
-            return Response({"detail": "Branch TIN is required."}, status=400)
+        generated_tin = False
 
         manager_username = (request.data.get("manager_username") or "").strip()
         manager_password = request.data.get("manager_password") or ""
@@ -334,6 +350,15 @@ class TenantBranchesView(APIView):
         elif is_main or not ClinicBranch.objects.filter(clinic_tin__iexact=tin).exists():
             ClinicBranch.objects.filter(clinic_tin__iexact=tin, is_main=True).update(is_main=False)
             is_main = True
+
+        if not branch_tin:
+            if is_main:
+                branch_tin = tin  # the main branch is the organization's own location
+            else:
+                # No TIN given: this branch gets its own unique one (never the organization's), so it keeps its
+                # own billing, staff, mode and clinic-server token.
+                branch_tin = generate_branch_tin()
+                generated_tin = True
 
         # Satellite branches must use a TIN different from the org TIN.
         if not is_main and branch_tin.lower() == tin.lower():
@@ -379,6 +404,7 @@ class TenantBranchesView(APIView):
 
         payload = _serialize_branch(branch)
         payload["manager_username"] = manager_username
+        payload["tin_generated"] = generated_tin
         if demoted:
             payload["demoted_mains"] = demoted
         return Response(payload, status=status.HTTP_201_CREATED)

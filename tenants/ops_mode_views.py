@@ -120,9 +120,21 @@ class ApproveOpsModeRequestView(APIView):
             metadata={"request_id": req.id, "awaiting_step": step},
         )
 
+        # Going offline: hand over the clinic server's token right away (shown once, never stored in readable form).
+        issued = None
+        if step == "seed":
+            from .sync_nodes import auto_issue_server_token
+
+            issued = auto_issue_server_token(
+                tenant, getattr(request.user.user, "username", ""), going_offline=True
+            )
+            if issued:
+                detail += " A clinic server token was issued: copy it now, it cannot be shown again."
+
         return Response(
             {
                 "detail": detail,
+                "server_token": issued,
                 "request": _serialize(
                     req, clinic_name=tenant.pharmacy_name, server=_server_summary({req.clinic_tin}).get(req.clinic_tin)
                 ),
